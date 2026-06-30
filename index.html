@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Log Reader</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #0a0a0a;
+            color: #cccccc;
+            font-family: "Courier New", "Lucida Console", Monaco, monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            min-height: 100vh;
+        }
+
+        /* ---- CRT scanline overlay ---- */
+        body::after {
+            content: none;
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background: repeating-linear-gradient(
+                    0deg,
+                    rgba(0,0,0,0.15) 0px,
+                    rgba(0,0,0,0.15) 1px,
+                    transparent 1px,
+                    transparent 3px
+            );
+            z-index: 9999;
+        }
+
+        /* ---- Title bar ---- */
+        .titlebar {
+            background: #1a1a1a;
+            border-bottom: 1px solid #333;
+            padding: 6px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+        .titlebar .dot {
+            width: 12px; height: 12px; border-radius: 50%;
+        }
+        .titlebar .dot.red    { background: #ff5f57; }
+        .titlebar .dot.yellow { background: #febc2e; }
+        .titlebar .dot.green  { background: #28c840; }
+        .titlebar .title {
+            flex: 1;
+            text-align: center;
+            color: #888;
+            font-size: 12px;
+        }
+
+        /* ---- Console wrapper ---- */
+        .console {
+            padding: 0 1px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ---- Prompt line ---- */
+        .prompt-bar {
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+            border-bottom: 1px solid #1a1a1a;
+        }
+        .prompt-bar .prompt {
+            color: #ffffff;
+            white-space: nowrap;
+            font-weight: bold;
+        }
+        .prompt-bar input, .prompt-bar select {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #cccccc;
+            font-family: inherit;
+            font-size: 13px;
+            outline: none;
+            caret-color: #ffffff;
+            padding: 2px 0;
+            min-width: 0;
+        }
+        .prompt-bar input::placeholder { color: #555; }
+        .prompt-bar .separator {
+            color: #666;
+            flex-shrink: 0;
+        }
+
+        /* ---- Toolbar row ---- */
+        .toolbar {
+            padding: 4px 12px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+            border-bottom: 1px solid #1a1a1a;
+        }
+        .toolbar input {
+            background: transparent;
+            border: 1px solid #555;
+            color: #cccccc;
+            font-family: inherit;
+            font-size: 12px;
+            padding: 2px 8px;
+            outline: none;
+            min-width: 120px;
+        }
+        .toolbar input:focus {
+            border-color: #999;
+        }
+        .toolbar input::placeholder {
+            color: #555;
+        }
+        .toolbar .cmd {
+            background: transparent;
+            border: 1px solid #555;
+            color: #cccccc;
+            font-family: inherit;
+            font-size: 12px;
+            padding: 2px 8px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .toolbar .cmd:hover {
+            background: #1a1a1a;
+            border-color: #999;
+        }
+        .toolbar .cmd.active {
+            background: #333;
+            color: #ffffff;
+        }
+        .toolbar .filler { flex: 1; }
+        .toolbar .cmd.dim {
+            color: #666;
+            border-color: #333;
+        }
+        .toolbar .cmd.dim:hover {
+            color: #cccccc;
+            border-color: #555;
+        }
+
+        /* ---- Service filter row ---- */
+        .filter-bar {
+            padding: 4px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+            border-bottom: 1px solid #1a1a1a;
+        }
+        .filter-bar .label {
+            color: #666;
+            white-space: nowrap;
+        }
+        .filter-bar input {
+            background: transparent;
+            border: none;
+            color: #cccccc;
+            font-family: inherit;
+            font-size: 13px;
+            outline: none;
+            flex: 1;
+            min-width: 0;
+        }
+        .filter-bar input::placeholder { color: #555; }
+
+        /* ---- Dropzone ---- */
+        .dropzone {
+            border: 1px dashed #555;
+            padding: 20px 12px;
+            text-align: center;
+            color: #666;
+            cursor: pointer;
+            transition: all .2s;
+            flex-shrink: 0;
+        }
+        .dropzone:hover, .dropzone.dragover {
+            border-color: #999;
+            color: #cccccc;
+            background: #111;
+        }
+        .dropzone input { display: none; }
+
+        /* ---- Meta info ---- */
+        .meta {
+            padding: 4px 12px;
+            color: #666;
+            font-size: 11px;
+            flex-shrink: 0;
+            border-bottom: 1px solid #111;
+        }
+        .meta .match-info { color: #cccccc; }
+
+        /* ---- Log output ---- */
+        .log {
+            flex: 1;
+            overflow: auto;
+            padding: 4px 0;
+            background: #050505;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .log-line {
+            display: block;
+            padding: 0 12px;
+            min-height: 18px;
+        }
+        .log-line:hover {
+            background: #011802;
+        }
+        .log-line.marked {
+            background: #3a3200;
+            border-left: 3px solid #ffd400;
+            padding-left: 9px;
+        }
+        .log-line.marked:hover {
+            background: #4a4000;
+        }
+        .log-line.marked.current-mark {
+            background: #5a4d00;
+        }
+        .log-line .ln {
+            color: #444;
+            cursor: pointer;
+            user-select: none;
+            margin-right: 12px;
+        }
+        .log-line.marked .ln {
+            color: #ffd400;
+        }
+        .log-line .txt { color: #cccccc; }
+
+        /* Level colors - classic terminal palette */
+        .lvl { font-weight: bold; }
+        .lvl-ERROR { color: #ff3333; }
+        .lvl-WARN  { color: #ffaa00; }
+        .lvl-INFO  { color: #33ff33; }
+        .svc-hl    { color: #cc66ff; font-weight: bold; }
+        .lvl-DEBUG { color: #3399ff; }
+
+        .highlight {
+            background: #808080;
+            color: #000000;
+        }
+        .highlight.active {
+            background: #ffd400;
+            color: #000000;
+        }
+
+        /* ---- Scrollbar ---- */
+        .log::-webkit-scrollbar { width: 8px; }
+        .log::-webkit-scrollbar-track { background: #0a0a0a; }
+        .log::-webkit-scrollbar-thumb { background: #444; border-radius: 0; }
+        .log::-webkit-scrollbar-thumb:hover { background: #666; }
+
+        /* ---- Blink cursor animation ---- */
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+        .cursor-blink {
+            display: inline-block;
+            width: 8px;
+            height: 14px;
+            background: #ffffff;
+            animation: blink 1s step-end infinite;
+            vertical-align: middle;
+            margin-left: 2px;
+        }
+
+        /* ---- Glow effect ---- */
+        .log {
+            text-shadow: none;
+        }
+
+        /* ---- Status bar at bottom ---- */
+        .statusbar {
+            background: #1a1a1a;
+            border-top: 1px solid #333;
+            padding: 2px 12px;
+            color: #888;
+            font-size: 11px;
+            display: flex;
+            gap: 16px;
+            flex-shrink: 0;
+        }
+        .statusbar .ok { color: #28c840; }
+        .statusbar .err { color: #ff5f57; }
+    </style>
+</head>
+<body>
+
+<!-- Title bar (macOS style) -->
+<div class="titlebar">
+    <div class="dot red"></div>
+    <div class="dot yellow"></div>
+    <div class="dot green"></div>
+    <div class="title">log-reader — bash</div>
+</div>
+
+<div class="console">
+
+    <!-- Dropzone -->
+    <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept=".log,.txt,.log.*">
+        <div>$ cat &lt;logfile.log&gt; <span class="cursor-blink"></span></div>
+        <div style="font-size:11px;margin-top:4px;">[ drag &amp; drop หรือ click เพื่อเลือกไฟล์ ]</div>
+    </label>
+
+    <!-- Search prompt -->
+    <div class="prompt-bar">
+        <span class="prompt">$</span>
+        <span class="separator">grep</span>
+        <input type="text" id="search" placeholder="...">
+    </div>
+
+    <!-- Level filter toolbar -->
+    <div class="toolbar">
+        <button class="cmd" data-level="" title="ALL">ALL</button>
+        <button class="cmd" data-level="ERROR" title="ERROR">ERROR</button>
+        <button class="cmd" data-level="WARN" title="WARN">WARN</button>
+        <button class="cmd" data-level="INFO" title="INFO">INFO</button>
+        <button class="cmd" data-level="DEBUG" title="DEBUG">DEBUG</button>
+        <div class="filler"></div>
+        <button class="cmd dim" id="prevBtn">◄ PREV</button>
+        <button class="cmd dim" id="nextBtn">NEXT ►</button>
+        <button class="cmd dim" id="prevMarkBtn">◄ MARK</button>
+        <button class="cmd dim" id="nextMarkBtn">MARK ►</button>
+        <button class="cmd" id="caseBtn" title="Case-sensitive search">Aa</button>
+        <button class="cmd" id="regexBtn" title="Regex search">.*</button>
+        <button class="cmd" id="markedOnlyBtn">MARKED</button>
+        <input type="text" id="serviceFilter" placeholder="service...">
+        <button class="cmd" id="downloadBtn">SAVE</button>
+        <button class="cmd" id="saveMarkedBtn">SAVE MARKED</button>
+        <button class="cmd" id="copyMarkedBtn">COPY MARKED</button>
+        <button class="cmd dim" id="clearMarksBtn">CLEAR MARKS</button>
+        <button class="cmd dim" id="clearBtn">CLEAR</button>
+    </div>
+
+    <!-- Meta info -->
+    <div class="meta" id="meta"></div>
+
+    <!-- Log output area -->
+    <pre class="log" id="log"></pre>
+
+    <!-- Status bar -->
+    <div class="statusbar">
+        <span id="statusLeft" class="ok">READY</span>
+        <span id="statusRight">UTF-8</span>
+    </div>
+</div>
+
+<script>
+    (() => {
+        const fileInput   = document.getElementById('fileInput');
+        const dropzone    = document.getElementById('dropzone');
+        const search      = document.getElementById('search');
+        const serviceFilter = document.getElementById('serviceFilter');
+        const prevBtn     = document.getElementById('prevBtn');
+        const nextBtn     = document.getElementById('nextBtn');
+        const prevMarkBtn = document.getElementById('prevMarkBtn');
+        const nextMarkBtn = document.getElementById('nextMarkBtn');
+        const caseBtn     = document.getElementById('caseBtn');
+        const regexBtn    = document.getElementById('regexBtn');
+        const markedOnlyBtn = document.getElementById('markedOnlyBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const saveMarkedBtn = document.getElementById('saveMarkedBtn');
+        const copyMarkedBtn = document.getElementById('copyMarkedBtn');
+        const clearMarksBtn = document.getElementById('clearMarksBtn');
+        const clearBtn    = document.getElementById('clearBtn');
+        const meta        = document.getElementById('meta');
+        const logEl       = document.getElementById('log');
+        const statusLeft  = document.getElementById('statusLeft');
+        const statusRight = document.getElementById('statusRight');
+        const levelBtns   = document.querySelectorAll('.toolbar .cmd[data-level]');
+
+        let allLines = [];
+        let matches  = [];
+        let matchIdx = -1;
+        let activeLevels = new Set();
+        let markedLines = new Set();
+        let lastSearch = '';
+        let lastMarkedLine = -1;
+        let currentMarkedLine = -1;
+        let dragMarking = false;
+        let dragMode = 'mark';
+        let currentFileKey = '';
+        let currentFileName = '';
+        let showMarkedOnly = false;
+        let caseSensitive = false;
+        let regexSearch = false;
+        const LEVEL_RE = /\b(ERROR|WARN(ING)?|INFO|DEBUG|FATAL|TRACE)\b/;
+        const LEVEL_GLOBAL_RE = /\b(ERROR|WARN(?:ING)?|INFO|DEBUG|FATAL|TRACE)\b/g;
+        const STORAGE_PREFIX = 'logReaderState:';
+
+        // ---- Level button multi-select ----
+        levelBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const lvl = btn.dataset.level;
+                if (!lvl) {
+                    // ALL = ยกเลิกทุก filter
+                    activeLevels.clear();
+                    levelBtns.forEach(b => b.classList.remove('active'));
+                } else {
+                    if (activeLevels.has(lvl)) {
+                        activeLevels.delete(lvl);
+                        btn.classList.remove('active');
+                    } else {
+                        activeLevels.add(lvl);
+                        btn.classList.add('active');
+                    }
+                    // ถ้าเลือกครบทุก level → ให้ ALL ดำ
+                    const allLvls = new Set([...levelBtns].map(b => b.dataset.level).filter(Boolean));
+                    const allBtn = document.querySelector('[data-level=""]');
+                    if (activeLevels.size === allLvls.size) {
+                        allBtn.classList.add('active');
+                    } else {
+                        allBtn.classList.remove('active');
+                    }
+                }
+                render();
+            });
+        });
+
+        // ---- Read file ----
+        function readFile(file) {
+            statusLeft.textContent = 'LOADING...';
+            statusLeft.className = '';
+            const reader = new FileReader();
+            reader.onload = e => {
+                const text = e.target.result;
+                allLines = text.split(/\r?\n/);
+                currentFileName = file.name;
+                currentFileKey = `${file.name}:${file.size}:${allLines.length}`;
+                markedLines.clear();
+                lastMarkedLine = -1;
+                currentMarkedLine = -1;
+                restoreState();
+                buildServiceList();
+                render();
+                meta.textContent = `[${file.name}] ${allLines.length} lines | ${(file.size/1024).toFixed(1)} KB`;
+                setStatus('OK');
+            };
+            reader.onerror = () => {
+                meta.textContent = 'ERROR: อ่านไฟล์ไม่สำเร็จ';
+                setStatus('ERROR', 'err');
+            };
+            reader.readAsText(file, 'UTF-8');
+        }
+
+        function getLevel(line) {
+            const m = line.match(LEVEL_RE);
+            if (!m) return '';
+            const l = m[1].toUpperCase();
+            if (l.startsWith('WARN')) return 'WARN';
+            if (l === 'FATAL')    return 'ERROR';
+            return l;
+        }
+
+        function buildServiceList() {
+            // autocomplete from unique pipe-delimited tokens (heuristic: between pipes, no dots/parens)
+            const set = new Set();
+            allLines.forEach(line => {
+                line.split('|').forEach(p => {
+                    const t = p.trim();
+                    if (t && !t.includes('.') && !t.includes('(') && !t.includes(' ') &&
+                        !/^[0-9a-f]{8}-/.test(t) && !/^\d{4}-\d{2}/.test(t) &&
+                        t !== 'localhost' && !['INFO','ERROR','WARN','DEBUG','TRACE','FATAL'].includes(t.toUpperCase())) {
+                        set.add(t);
+                    }
+                });
+            });
+            const dl = document.getElementById('serviceList');
+            if (!dl) return;
+            dl.innerHTML = [...set].slice(0, 200)
+                .map(s => '<option value="' + s.replace(/"/g, '&quot;') + '">').join('');
+        }
+
+        function escapeHtml(s) {
+            return s.replace(/[&<>"]/g, c => (
+                { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+            ));
+        }
+
+        function escapeRegex(s) {
+            return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        function storageKey() {
+            return currentFileKey ? STORAGE_PREFIX + currentFileKey : '';
+        }
+
+        function updateToggleButtons() {
+            caseBtn.classList.toggle('active', caseSensitive);
+            regexBtn.classList.toggle('active', regexSearch);
+            markedOnlyBtn.classList.toggle('active', showMarkedOnly);
+        }
+
+        function saveState() {
+            const key = storageKey();
+            if (!key) return;
+
+            const state = {
+                search: search.value,
+                serviceFilter: serviceFilter.value,
+                markedLines: [...markedLines],
+                showMarkedOnly,
+                caseSensitive,
+                regexSearch,
+                activeLevels: [...activeLevels]
+            };
+            localStorage.setItem(key, JSON.stringify(state));
+        }
+
+        function restoreState() {
+            const key = storageKey();
+            if (!key) return;
+
+            try {
+                const raw = localStorage.getItem(key);
+                if (!raw) return;
+                const state = JSON.parse(raw);
+                search.value = state.search || '';
+                serviceFilter.value = state.serviceFilter || '';
+                markedLines = new Set((state.markedLines || []).filter(i => Number.isInteger(i) && i >= 0));
+                showMarkedOnly = !!state.showMarkedOnly;
+                caseSensitive = !!state.caseSensitive;
+                regexSearch = !!state.regexSearch;
+                activeLevels = new Set(state.activeLevels || []);
+                levelBtns.forEach(btn => {
+                    const lvl = btn.dataset.level;
+                    btn.classList.toggle('active', !!lvl && activeLevels.has(lvl));
+                });
+                updateToggleButtons();
+            } catch {
+                localStorage.removeItem(key);
+            }
+        }
+
+        function buildSearchRegex(query, forHtml = false) {
+            if (!query) return null;
+            const source = regexSearch ? (forHtml ? escapeHtml(query) : query) : escapeRegex(forHtml ? escapeHtml(query) : query);
+            const flags = caseSensitive ? 'g' : 'gi';
+            return new RegExp(source, flags);
+        }
+
+        function setStatus(text, cls = 'ok') {
+            statusLeft.textContent = text;
+            statusLeft.className = cls;
+        }
+
+        function highlightLevels(line) {
+            let html = escapeHtml(line).replace(LEVEL_GLOBAL_RE, (raw) => {
+                let lvl = raw.toUpperCase();
+                if (lvl.startsWith('WARN')) lvl = 'WARN';
+                if (lvl === 'FATAL')        lvl = 'ERROR';
+                return '<span class="lvl lvl-' + lvl + '">' + raw + '</span>';
+            });
+            // highlight service name
+            const sf = serviceFilter.value.trim();
+            if (sf) {
+                const escaped = escapeHtml(sf);
+                const re = new RegExp('(' + sf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+                html = html.replace(re, '<span class="svc-hl">$1</span>');
+            }
+            return html;
+        }
+
+        function highlightSearchHtml(html, query, active) {
+            if (!query) return html;
+            const re = buildSearchRegex(query, true);
+            if (!re) return html;
+            let occurrence = -1;
+
+            return html
+                .split(/(<[^>]+>)/g)
+                .map(part => {
+                    if (part.startsWith('<')) return part;
+                    return part.replace(re, match => {
+                        occurrence += 1;
+                        const cls = occurrence === active ? 'highlight active' : 'highlight';
+                        return '<span class="' + cls + '">' + match + '</span>';
+                    });
+                })
+                .join('');
+        }
+
+        function getSearchMatches(line, query) {
+            if (!query) return [];
+            const found = [];
+            const re = buildSearchRegex(query);
+            if (!re) return found;
+            let match;
+
+            while ((match = re.exec(line)) !== null) {
+                found.push(match.index);
+                if (match[0].length === 0) re.lastIndex += 1;
+            }
+
+            return found;
+        }
+
+        // ---- Render ----
+        function render() {
+            const q = search.value.trim();
+            const searchSignature = `${q}|${caseSensitive ? 1 : 0}|${regexSearch ? 1 : 0}`;
+            const searchChanged = searchSignature !== lastSearch;
+            const previousMatch = searchChanged ? null : matches[matchIdx];
+            const previousKey = previousMatch ? previousMatch.key : '';
+            const visibleLines = [];
+            matches = [];
+
+            if (q) {
+                try {
+                    buildSearchRegex(q);
+                } catch (err) {
+                    matches = [];
+                    matchIdx = -1;
+                    statusLeft.textContent = 'REGEX ERROR';
+                    statusLeft.className = 'err';
+                    return;
+                }
+            }
+
+            allLines.forEach((line, i) => {
+                if (showMarkedOnly && !markedLines.has(i)) return;
+                if (activeLevels.size && !activeLevels.has(getLevel(line))) return;
+
+                // filter by service
+                const sf = serviceFilter.value.trim();
+                if (sf && !line.includes(sf)) return;
+
+                const lineMatches = getSearchMatches(line, q);
+                lineMatches.forEach((start, occurrenceInLine) => {
+                    matches.push({
+                        lineIdx: i,
+                        occurrenceInLine,
+                        key: i + ':' + start + ':' + occurrenceInLine
+                    });
+                });
+                visibleLines.push({ line, idx: i });
+            });
+
+            if (matches.length) {
+                if (searchChanged) {
+                    matchIdx = 0;
+                } else {
+                    const preservedIdx = matches.findIndex(m => m.key === previousKey);
+                    matchIdx = preservedIdx >= 0 ? preservedIdx : Math.min(Math.max(matchIdx, 0), matches.length - 1);
+                }
+            } else {
+                matchIdx = -1;
+            }
+
+            lastSearch = searchSignature;
+
+            const activeMatch = matchIdx >= 0 ? matches[matchIdx] : null;
+            const frag = document.createDocumentFragment();
+
+            visibleLines.forEach(({ line, idx }) => {
+                const activeOccurrence = activeMatch && activeMatch.lineIdx === idx ? activeMatch.occurrenceInLine : -1;
+
+                const div = document.createElement('span');
+                div.className = 'log-line';
+                if (markedLines.has(idx)) div.classList.add('marked');
+                if (idx === currentMarkedLine) div.classList.add('current-mark');
+                div.dataset.idx = idx;
+
+                const ln = document.createElement('span');
+                ln.className = 'ln';
+                ln.textContent = (idx + 1).toString().padStart(5, ' ') + ' │';
+                ln.title = 'Mark line';
+
+                const txt = document.createElement('span');
+                txt.className = 'txt';
+                txt.innerHTML = highlightSearchHtml(highlightLevels(line), q, activeOccurrence);
+
+                div.appendChild(ln);
+                div.appendChild(txt);
+                frag.appendChild(div);
+            });
+
+            logEl.innerHTML = '';
+            logEl.appendChild(frag);
+
+            if (matches.length) {
+                meta.innerHTML = meta.textContent.split('•')[0].trim()
+                    + ` • <span class="match-info">${matches.length} match(es) — ${matchIdx + 1}/${matches.length}</span>`;
+                scrollToMatch();
+            } else {
+                const base = meta.textContent.split('•')[0].trim();
+                meta.innerHTML = base;
+            }
+            if (statusLeft.textContent === 'REGEX ERROR') setStatus('OK');
+        }
+
+        function scrollToMatch() {
+            if (matchIdx < 0 || !matches.length) return;
+            const el = logEl.querySelector(`[data-idx="${matches[matchIdx].lineIdx}"]`);
+            if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+
+        function stepMatch(d) {
+            if (!matches.length) return;
+            matchIdx = (matchIdx + d + matches.length) % matches.length;
+            render();
+        }
+
+        function markedLineIndexes() {
+            return [...markedLines].sort((a, b) => a - b);
+        }
+
+        function markedLineText() {
+            return markedLineIndexes().map(i => allLines[i]).filter(line => line !== undefined).join('\n');
+        }
+
+        function downloadText(text, filename) {
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        async function copyText(text) {
+            if (!text) return false;
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            const ok = document.execCommand('copy');
+            textarea.remove();
+            return ok;
+        }
+
+        function stepMarkedLine(d) {
+            const lines = markedLineIndexes();
+            if (!lines.length) return;
+            const currentPos = currentMarkedLine >= 0 ? lines.indexOf(currentMarkedLine) : -1;
+            const nextPos = currentPos >= 0 ? (currentPos + d + lines.length) % lines.length : (d > 0 ? 0 : lines.length - 1);
+            currentMarkedLine = lines[nextPos];
+            render();
+            const el = logEl.querySelector(`[data-idx="${currentMarkedLine}"]`);
+            if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+
+        function setLineMarked(idx, marked, persist = true) {
+            if (marked) {
+                markedLines.add(idx);
+            } else {
+                markedLines.delete(idx);
+                if (currentMarkedLine === idx) currentMarkedLine = -1;
+            }
+
+            const lineEl = logEl.querySelector(`[data-idx="${idx}"]`);
+            if (lineEl) lineEl.classList.toggle('marked', marked);
+            if (persist) saveState();
+        }
+
+        function setLineRangeMarked(from, to, marked) {
+            const start = Math.min(from, to);
+            const end = Math.max(from, to);
+            for (let i = start; i <= end; i++) setLineMarked(i, marked, false);
+            saveState();
+        }
+
+        function lineIndexFromEvent(e) {
+            const ln = e.target.closest('.ln');
+            if (!ln) return -1;
+            const lineEl = ln.closest('.log-line');
+            return lineEl ? +lineEl.dataset.idx : -1;
+        }
+
+        // ---- Events ----
+        fileInput.addEventListener('change', e => { if (e.target.files[0]) readFile(e.target.files[0]); });
+
+        ['dragover', 'dragenter'].forEach(ev =>
+            dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('dragover'); })
+        );
+        ['dragleave', 'dragend'].forEach(ev =>
+            dropzone.addEventListener(ev, () => dropzone.classList.remove('dragover'))
+        );
+        dropzone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            const f = e.dataTransfer.files[0];
+            if (f) readFile(f);
+        });
+
+        let debounce;
+        search.addEventListener('input', () => {
+            clearTimeout(debounce);
+            debounce = setTimeout(() => {
+                saveState();
+                render();
+            }, 200);
+        });
+        serviceFilter.addEventListener('input', () => {
+            clearTimeout(debounce);
+            debounce = setTimeout(() => {
+                saveState();
+                render();
+            }, 200);
+        });
+        search.addEventListener('keydown', e => {
+            if (e.key === 'Enter') { e.preventDefault(); stepMatch(e.shiftKey ? -1 : 1); }
+        });
+
+        prevBtn.addEventListener('click', () => stepMatch(-1));
+        nextBtn.addEventListener('click', () => stepMatch(1));
+
+        logEl.addEventListener('pointerdown', e => {
+            const idx = lineIndexFromEvent(e);
+            if (idx < 0) return;
+
+            e.preventDefault();
+            if (e.shiftKey && lastMarkedLine >= 0) {
+                setLineRangeMarked(lastMarkedLine, idx, true);
+                lastMarkedLine = idx;
+                return;
+            }
+
+            dragMarking = true;
+            dragMode = markedLines.has(idx) ? 'unmark' : 'mark';
+            setLineMarked(idx, dragMode === 'mark');
+            lastMarkedLine = idx;
+        });
+
+        logEl.addEventListener('pointerover', e => {
+            if (!dragMarking) return;
+            const idx = lineIndexFromEvent(e);
+            if (idx < 0) return;
+            setLineMarked(idx, dragMode === 'mark');
+            lastMarkedLine = idx;
+        });
+
+        window.addEventListener('pointerup', () => {
+            dragMarking = false;
+        });
+        window.addEventListener('pointercancel', () => {
+            dragMarking = false;
+        });
+
+
+        markedOnlyBtn.addEventListener('click', () => {
+            showMarkedOnly = !showMarkedOnly;
+            updateToggleButtons();
+            saveState();
+            render();
+        });
+
+        prevMarkBtn.addEventListener('click', () => stepMarkedLine(-1));
+        nextMarkBtn.addEventListener('click', () => stepMarkedLine(1));
+
+        caseBtn.addEventListener('click', () => {
+            caseSensitive = !caseSensitive;
+            updateToggleButtons();
+            saveState();
+            render();
+        });
+
+        regexBtn.addEventListener('click', () => {
+            regexSearch = !regexSearch;
+            updateToggleButtons();
+            saveState();
+            render();
+        });
+
+        copyMarkedBtn.addEventListener('click', async () => {
+            const text = markedLineText();
+            if (!text) return;
+            try {
+                await copyText(text);
+                setStatus('COPIED');
+                setTimeout(() => setStatus('OK'), 1500);
+            } catch {
+                setStatus('COPY FAILED', 'err');
+            }
+        });
+
+        saveMarkedBtn.addEventListener('click', () => {
+            const text = markedLineText();
+            if (!text) return;
+
+            const filename = currentFileName
+                ? currentFileName.replace(/\.[^.]+$/, '') + '-marked.log'
+                : 'marked.log';
+
+            downloadText(text, filename);
+            setStatus('MARKED SAVED');
+            setTimeout(() => setStatus('OK'), 1500);
+        });
+
+        clearMarksBtn.addEventListener('click', () => {
+            markedLines.clear();
+            lastMarkedLine = -1;
+            currentMarkedLine = -1;
+            saveState();
+            render();
+            setStatus('MARKS CLEARED');
+            setTimeout(() => setStatus('OK'), 1500);
+        });
+
+
+        downloadBtn.addEventListener('click', () => {
+            const lines = [];
+            logEl.querySelectorAll('.log-line').forEach(d => lines.push(allLines[+d.dataset.idx]));
+            const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'filtered.log';
+            a.click();
+            URL.revokeObjectURL(a.href);
+            statusLeft.textContent = 'SAVED';
+            statusLeft.className = 'ok';
+            setTimeout(() => { statusLeft.textContent = 'OK'; }, 1500);
+        });
+
+        clearBtn.addEventListener('click', () => {
+            allLines = [];
+            matches = [];
+            matchIdx = -1;
+            markedLines.clear();
+            lastMarkedLine = -1;
+            dragMarking = false;
+            lastSearch = '';
+            logEl.innerHTML = '';
+            meta.textContent = '';
+            search.value = '';
+            serviceFilter.value = '';
+            fileInput.value = '';
+            statusLeft.textContent = 'READY';
+            statusLeft.className = 'ok';
+        });
+    })();
+</script>
+</body>
+</html>
